@@ -19,20 +19,16 @@ default_args = {
 
 def get_gmail_service():
     creds = None
-    # token.json stores the user's access/refresh tokens after first auth
     if os.path.exists('../token.json'):
         creds = Credentials.from_authorized_user_file('../token.json', SCOPES)
 
-    # If no valid creds, do the OAuth flow
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            with open('../token.json', 'w') as token:
+                token.write(creds.to_json())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file('../credentials.json', SCOPES)
-            creds = flow.run_local_server(port=8080)
-
-        with open('../token.json', 'w') as token:
-            token.write(creds.to_json())
+            raise Exception("No valid token. Run auth locally first and copy token.json to server.")
 
     return build('gmail', 'v1', credentials=creds)
 
