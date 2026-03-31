@@ -63,6 +63,26 @@ def get_gmail_service():
             raise Exception(f"No valid token at {TOKEN_PATH}")
     return build('gmail', 'v1', credentials=creds)
 
+def get_cycle_bounds(now=None):
+    now = now or datetime.now()
+
+    if now.day >= 15:
+        cycle_start = now.replace(day=15, hour=0, minute=0, second=0, microsecond=0)
+        if now.month == 12:
+            next_month = now.replace(year=now.year + 1, month=1, day=1)
+        else:
+            next_month = now.replace(month=now.month + 1, day=1)
+        cycle_end = next_month.replace(day=15, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        if now.month == 1:
+            prev_month = now.replace(year=now.year - 1, month=12, day=1)
+        else:
+            prev_month = now.replace(month=now.month - 1, day=1)
+
+        cycle_start = prev_month.replace(day=15, hour=0, minute=0, second=0, microsecond=0)
+        cycle_end = now.replace(day=15, hour=0, minute=0, second=0, microsecond=0)
+
+    return cycle_start, cycle_end
 
 def get_email_body(payload):
     if 'data' in payload.get('body', {}):
@@ -328,6 +348,14 @@ def generate_dashboard(**context):
         return
 
     df = pd.concat(frames, ignore_index=True)
+    df["parsed_ts"] = pd.to_datetime(df["date"], errors="coerce")
+
+    cycle_start, cycle_end = get_cycle_bounds()
+    df_cycle = df[
+        (df["parsed_ts"].notna()) &
+        (df["parsed_ts"] >= cycle_start) &
+        (df["parsed_ts"] < cycle_end)
+    ].copy()
     if "to_merchant" in df.columns:
         df = df[~df["to_merchant"].fillna("").isin(EXCLUDED_MERCHANTS)].copy()
 
@@ -349,13 +377,21 @@ def generate_dashboard(**context):
         SELECT to_merchant,
             COUNT(*) AS count,
             ROUND(SUM(CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
-        FROM df
+        FROM df_cycle
         WHERE to_merchant IS NOT NULL
-        AND TRY_CAST(date AS TIMESTAMP) IS NOT NULL
-        AND STRFTIME(TRY_CAST(date AS TIMESTAMP), '%Y-%m') = STRFTIME(CURRENT_DATE, '%Y-%m')
         GROUP BY to_merchant
         ORDER BY total DESC
         LIMIT 5
+    """).df()
+
+    cycle_spend = con.execute("""
+        SELECT ROUND(SUM(CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
+        FROM df_cycle
+    """).df()
+
+    cycle_transactions = con.execute("""
+        SELECT COUNT(*) AS count
+        FROM df_cycle
     """).df()
 
     daily_spend = con.execute("""
@@ -378,12 +414,16 @@ def generate_dashboard(**context):
     """).df()
 
     dashboard_data = {
-        'generated_at': datetime.now().isoformat(),
-        'total_transactions': int(len(df)),
-        'spend_by_type': json.loads(spend_by_type.to_json(orient='records')),
-        'top_merchants': json.loads(top_merchants.to_json(orient='records')),
-        'daily_spend': json.loads(daily_spend.to_json(orient='records', date_format='iso')),
-        'monthly_spend': json.loads(monthly_spend.to_json(orient='records')),
+    'generated_at': datetime.now().isoformat(),
+    'cycle_start': cycle_start.date().isoformat(),
+    'cycle_end': cycle_end.date().isoformat(),
+    'total_transactions': int(len(df)),
+    'cycle_spend': float(cycle_spend["total"].iloc[0]) if not cycle_spend.empty and pd.notna(cycle_spend["total"].iloc[0]) else 0.0,
+    'cycle_transactions': int(cycle_transactions["count"].iloc[0]) if not cycle_transactions.empty else 0,
+    'spend_by_type': json.loads(spend_by_type.to_json(orient='records')),
+    'top_merchants': json.loads(top_merchants.to_json(orient='records')),
+    'daily_spend': json.loads(daily_spend.to_json(orient='records', date_format='iso')),
+    'monthly_spend': json.loads(monthly_spend.to_json(orient='records')),
     }
 
     s3.put_object(

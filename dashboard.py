@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime
 
 import boto3
 import pandas as pd
@@ -11,6 +12,26 @@ AWS_REGION = "ap-southeast-1"
 
 st.set_page_config(page_title="Expense Tracker", layout="wide")
 st.title("Expense Tracker Dashboard")
+
+
+def get_cycle_bounds(now=None):
+    now = now or datetime.now()
+
+    if now.day >= 15:
+        cycle_start = now.replace(day=15, hour=0, minute=0, second=0, microsecond=0)
+        if now.month == 12:
+            cycle_end = now.replace(year=now.year + 1, month=1, day=15, hour=0, minute=0, second=0, microsecond=0)
+        else:
+            cycle_end = now.replace(month=now.month + 1, day=15, hour=0, minute=0, second=0, microsecond=0)
+    else:
+        if now.month == 1:
+            cycle_start = now.replace(year=now.year - 1, month=12, day=15, hour=0, minute=0, second=0, microsecond=0)
+        else:
+            cycle_start = now.replace(month=now.month - 1, day=15, hour=0, minute=0, second=0, microsecond=0)
+
+        cycle_end = now.replace(day=15, hour=0, minute=0, second=0, microsecond=0)
+
+    return cycle_start, cycle_end
 
 
 @st.cache_data(ttl=300)
@@ -40,7 +61,10 @@ df_type = pd.DataFrame(data.get("spend_by_type", []))
 df_merchants = pd.DataFrame(data.get("top_merchants", []))
 
 today_str = pd.Timestamp.now().strftime("%Y-%m-%d")
-current_month = pd.Timestamp.now().strftime("%Y-%m")
+cycle_start_default, cycle_end_default = get_cycle_bounds()
+
+cycle_start = data.get("cycle_start", cycle_start_default.date().isoformat())
+cycle_end = data.get("cycle_end", cycle_end_default.date().isoformat())
 
 daily_spend_value = 0.0
 if not df_daily.empty and {"date", "total"}.issubset(df_daily.columns):
@@ -49,17 +73,8 @@ if not df_daily.empty and {"date", "total"}.issubset(df_daily.columns):
     if not match.empty:
         daily_spend_value = float(match.iloc[0])
 
-monthly_spend_value = 0.0
-transactions_this_month = 0
-if not df_monthly.empty and {"month", "total"}.issubset(df_monthly.columns):
-    month_total = df_monthly.loc[df_monthly["month"] == current_month, "total"]
-    if not month_total.empty:
-        monthly_spend_value = float(month_total.iloc[0])
-
-if not df_monthly.empty and {"month", "count"}.issubset(df_monthly.columns):
-    month_count = df_monthly.loc[df_monthly["month"] == current_month, "count"]
-    if not month_count.empty:
-        transactions_this_month = int(month_count.iloc[0])
+monthly_spend_value = float(data.get("cycle_spend", 0.0))
+transactions_this_month = int(data.get("cycle_transactions", 0))
 
 card_total = 0.0
 paynow_total = 0.0
@@ -78,8 +93,10 @@ if not df_type.empty and {"type", "total"}.issubset(df_type.columns):
 top1, top2, top3, top4 = st.columns(4)
 top1.metric("Daily Spend", f"${daily_spend_value:,.2f}")
 top2.metric("Monthly Spend", f"${monthly_spend_value:,.2f}")
-top3.metric("Total Transactions This Month", transactions_this_month)
-top4.metric("Current Month Merchants", len(df_merchants) if not df_merchants.empty else 0)
+top3.metric("Total Transactions This Cycle", transactions_this_month)
+top4.metric("Current Cycle Merchants", len(df_merchants) if not df_merchants.empty else 0)
+
+st.caption(f"Cycle: {cycle_start} to {cycle_end}")
 
 st.divider()
 
@@ -89,7 +106,7 @@ c2.metric("PayNow", f"${paynow_total:,.2f}")
 
 st.divider()
 
-st.subheader("Top 5 Merchants This Month")
+st.subheader("Top 5 Merchants This Cycle")
 if not df_merchants.empty:
     table_df = df_merchants.rename(
         columns={
@@ -118,7 +135,11 @@ with bottom_left:
         daily_table = daily_table.dropna(subset=["date"]).sort_values("date", ascending=False)
         daily_table["date"] = daily_table["date"].dt.strftime("%Y-%m-%d")
         daily_table = daily_table.rename(columns={"date": "Date", "total": "Total (SGD)"})
-        st.dataframe(daily_table[["Date", "Total (SGD)"]], use_container_width=True, hide_index=True)
+        st.dataframe(
+            daily_table[["Date", "Total (SGD)"]],
+            use_container_width=True,
+            hide_index=True,
+        )
     else:
         st.info("No data")
 
@@ -134,6 +155,10 @@ with bottom_right:
             }
         )
         cols = [c for c in ["Month", "Transactions", "Total (SGD)"] if c in monthly_table.columns]
-        st.dataframe(monthly_table[cols], use_container_width=True, hide_index=True)
+        st.dataframe(
+            monthly_table[cols],
+            use_container_width=True,
+            hide_index=True,
+        )
     else:
         st.info("No data")
