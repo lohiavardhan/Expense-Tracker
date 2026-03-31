@@ -368,11 +368,11 @@ def generate_dashboard(**context):
 
     dashboard_data = {
         'generated_at': datetime.now().isoformat(),
-        'total_transactions': len(df),
-        'spend_by_type': spend_by_type.to_dict(orient='records'),
-        'top_merchants': top_merchants.to_dict(orient='records'),
-        'daily_spend': daily_spend.to_dict(orient='records'),
-        'monthly_spend': monthly_spend.to_dict(orient='records'),
+        'total_transactions': int(len(df)),
+        'spend_by_type': json.loads(spend_by_type.to_json(orient='records')),
+        'top_merchants': json.loads(top_merchants.to_json(orient='records')),
+        'daily_spend': json.loads(daily_spend.to_json(orient='records', date_format='iso')),
+        'monthly_spend': json.loads(monthly_spend.to_json(orient='records')),
     }
 
     s3.put_object(
