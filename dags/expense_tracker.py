@@ -159,6 +159,9 @@ def load_to_lake(banking=None, **context):
 # PARSE EMAIL
 def parse_emails(banking=None, **context):
     # Airflow mode: pull from XCom
+    if not banking:
+        print("No banking emails found to parse")
+        return []
     if banking is None and context.get('ti'):
         banking = context['ti'].xcom_pull(task_ids='fetch_emails', key='banking')
 
@@ -203,7 +206,6 @@ def parse_emails(banking=None, **context):
 
             if email_dt:
                 cleaned_with_year = f"{cleaned} {email_dt.year}"
-
                 for fmt in [
                     "%d %b %H:%M %Y",
                     "%d %B %H:%M %Y",
