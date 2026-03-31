@@ -186,27 +186,36 @@ def parse_emails(banking=None, **context):
         to_merchant = re.search(r'To:\s*(.+?)(?:\s*\(UEN|\s*If\s|(?:\s{2,}|\n))', text)
         from_card = re.search(r'From:\s*(.+?)(?:\s{2,}|\n)', text)
 
+        email_date_header = get_header(headers, "Date")
+        email_dt = None
+        if email_date_header:
+            try:
+                email_dt = datetime.strptime(email_date_header, "%a, %d %b %Y %H:%M:%S %z")
+            except ValueError:
+                email_dt = None
+
         raw_date = date_match.group(1).strip() if date_match else None
         parsed_date = None
 
         if raw_date:
-            raw_date = " ".join(raw_date.split())
+            cleaned = raw_date.replace("(SGT)", "").strip()
+            cleaned = " ".join(cleaned.split())
 
-            formats = [
-                "%d %b %Y %I:%M %p",
-                "%d %b %Y %H:%M",
-                "%d/%m/%Y %I:%M %p",
-                "%d/%m/%Y %H:%M",
-                "%d %B %Y %I:%M %p",
-                "%d %B %Y %H:%M",
-            ]
+            if email_dt:
+                cleaned_with_year = f"{cleaned} {email_dt.year}"
 
-            for fmt in formats:
-                try:
-                    parsed_date = datetime.strptime(raw_date, fmt).isoformat()
-                    break
-                except ValueError:
-                    pass
+                for fmt in [
+                    "%d %b %H:%M %Y",
+                    "%d %B %H:%M %Y",
+                    "%d/%m %H:%M %Y",
+                    "%d %b %I:%M %p %Y",
+                    "%d %B %I:%M %p %Y",
+                ]:
+                    try:
+                        parsed_date = datetime.strptime(cleaned_with_year, fmt).isoformat()
+                        break
+                    except ValueError:
+                        pass
 
         print(f"RAW DATE: {raw_date} | PARSED DATE: {parsed_date} | SUBJECT: {subject}")
 
