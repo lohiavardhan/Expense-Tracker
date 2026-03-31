@@ -190,12 +190,25 @@ def parse_emails(banking=None, **context):
         parsed_date = None
 
         if raw_date:
-            for fmt in ('%d %b %Y %I:%M %p', '%d %b %Y %H:%M', '%d/%m/%Y %I:%M %p'):
+            raw_date = " ".join(raw_date.split())
+
+            formats = [
+                "%d %b %Y %I:%M %p",
+                "%d %b %Y %H:%M",
+                "%d/%m/%Y %I:%M %p",
+                "%d/%m/%Y %H:%M",
+                "%d %B %Y %I:%M %p",
+                "%d %B %Y %H:%M",
+            ]
+
+            for fmt in formats:
                 try:
                     parsed_date = datetime.strptime(raw_date, fmt).isoformat()
                     break
                 except ValueError:
                     pass
+
+        print(f"RAW DATE: {raw_date} | PARSED DATE: {parsed_date} | SUBJECT: {subject}")
 
         date_prefix = datetime.now().strftime('%Y/%m/%d')
         s3_raw_path = f"s3://{S3_BUCKET}/raw/{date_prefix}/{detail['id']}.json" if IS_AWS else None
@@ -296,6 +309,9 @@ def generate_dashboard(**context):
         return
 
     df = pd.concat(frames, ignore_index=True)
+    print(df[["email_id", "date_raw", "date", "amount", "type"]].tail(20))
+    print("Rows with parsed date:", df["date"].notna().sum())
+    print("Total rows:", len(df))
     con = duckdb.connect()
 
     spend_by_type = con.execute("""
