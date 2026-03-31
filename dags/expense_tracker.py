@@ -309,7 +309,6 @@ def generate_dashboard(**context):
         return
 
     df = pd.concat(frames, ignore_index=True)
-    print(df[["email_id", "date_raw", "date", "amount", "type"]].tail(20))
     print("Rows with parsed date:", df["date"].notna().sum())
     print("Total rows:", len(df))
     con = duckdb.connect()
