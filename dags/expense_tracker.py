@@ -6,6 +6,8 @@ import re
 import io
 from datetime import datetime, timedelta
 from pathlib import Path
+import duckdb
+import pandas as pd
 
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials

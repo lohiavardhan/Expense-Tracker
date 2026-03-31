@@ -5,6 +5,7 @@ import boto3
 import pandas as pd
 import streamlit as st
 import duckdb
+import pandas as pd
 
 S3_BUCKET = os.environ.get("S3_BUCKET", "expense-tracker-vardhan")
 AWS_REGION = "ap-southeast-1"
