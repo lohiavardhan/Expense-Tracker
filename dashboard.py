@@ -4,8 +4,7 @@ import os
 import boto3
 import pandas as pd
 import streamlit as st
-import duckdb
-import pandas as pd
+from botocore.exceptions import ClientError
 
 S3_BUCKET = os.environ.get("S3_BUCKET", "expense-tracker-vardhan")
 AWS_REGION = "ap-southeast-1"
@@ -23,32 +22,48 @@ def load_dashboard_data():
 
 try:
     data = load_dashboard_data()
+except ClientError as e:
+    if e.response["Error"]["Code"] == "NoSuchKey":
+        st.warning("No dashboard data yet.")
+    else:
+        st.error(f"Could not load dashboard data from S3: {e}")
+    st.stop()
 except Exception as e:
     st.error(f"Could not load dashboard data from S3: {e}")
     st.stop()
 
 st.caption(f"Last updated: {data['generated_at']}")
 
-# Data
 df_daily = pd.DataFrame(data.get("daily_spend", []))
 df_monthly = pd.DataFrame(data.get("monthly_spend", []))
 df_type = pd.DataFrame(data.get("spend_by_type", []))
 df_merchants = pd.DataFrame(data.get("top_merchants", []))
 
+today_str = pd.Timestamp.now().strftime("%Y-%m-%d")
 current_month = pd.Timestamp.now().strftime("%Y-%m")
 
-# total transactions this month
-transactions_this_month = 0
-if not df_monthly.empty and "month" in df_monthly.columns and "count" in df_monthly.columns:
-    match = df_monthly.loc[df_monthly["month"] == current_month, "count"]
+daily_spend_value = 0.0
+if not df_daily.empty and {"date", "total"}.issubset(df_daily.columns):
+    df_daily["date"] = pd.to_datetime(df_daily["date"], errors="coerce")
+    match = df_daily.loc[df_daily["date"].dt.strftime("%Y-%m-%d") == today_str, "total"]
     if not match.empty:
-        transactions_this_month = int(match.iloc[0])
+        daily_spend_value = float(match.iloc[0])
 
-# card / paynow totals
+monthly_spend_value = 0.0
+transactions_this_month = 0
+if not df_monthly.empty and {"month", "total"}.issubset(df_monthly.columns):
+    month_total = df_monthly.loc[df_monthly["month"] == current_month, "total"]
+    if not month_total.empty:
+        monthly_spend_value = float(month_total.iloc[0])
+
+if not df_monthly.empty and {"month", "count"}.issubset(df_monthly.columns):
+    month_count = df_monthly.loc[df_monthly["month"] == current_month, "count"]
+    if not month_count.empty:
+        transactions_this_month = int(month_count.iloc[0])
+
 card_total = 0.0
 paynow_total = 0.0
-
-if not df_type.empty and "type" in df_type.columns and "total" in df_type.columns:
+if not df_type.empty and {"type", "total"}.issubset(df_type.columns):
     tmp = df_type.copy()
     tmp["type_norm"] = tmp["type"].astype(str).str.strip().str.lower()
 
@@ -60,53 +75,21 @@ if not df_type.empty and "type" in df_type.columns and "total" in df_type.column
     if not paynow_match.empty:
         paynow_total = float(paynow_match.iloc[0])
 
-# top 5 merchants
-if not df_merchants.empty and "total" in df_merchants.columns:
-    df_merchants = df_merchants.sort_values("total", ascending=False).head(5)
-
-# charts row
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.subheader("Daily Spend (SGD)")
-    if not df_daily.empty:
-        # support either "date" or "day" from backend
-        date_col = "date" if "date" in df_daily.columns else "day" if "day" in df_daily.columns else None
-
-        if date_col:
-            df_daily[date_col] = pd.to_datetime(df_daily[date_col], errors="coerce")
-            df_daily = df_daily.dropna(subset=[date_col]).set_index(date_col).sort_index()
-            if "total" in df_daily.columns and not df_daily.empty:
-                st.line_chart(df_daily["total"], use_container_width=True)
-            else:
-                st.info("No data")
-        else:
-            st.info("No data")
-    else:
-        st.info("No data")
-
-with col2:
-    st.subheader("Monthly Spend (SGD)")
-    if not df_monthly.empty and {"month", "total"}.issubset(df_monthly.columns):
-        st.bar_chart(df_monthly.set_index("month")["total"], use_container_width=True)
-    else:
-        st.info("No data")
-
-with col3:
-    st.subheader("Total Transactions This Month")
-    st.metric("Transactions", transactions_this_month)
+top1, top2, top3, top4 = st.columns(4)
+top1.metric("Daily Spend", f"${daily_spend_value:,.2f}")
+top2.metric("Monthly Spend", f"${monthly_spend_value:,.2f}")
+top3.metric("Total Transactions This Month", transactions_this_month)
+top4.metric("Current Month Merchants", len(df_merchants) if not df_merchants.empty else 0)
 
 st.divider()
 
-# summary cards
 c1, c2 = st.columns(2)
 c1.metric("Card", f"${card_total:,.2f}")
 c2.metric("PayNow", f"${paynow_total:,.2f}")
 
 st.divider()
 
-# top 5 merchants table
-st.subheader("Top 5 Merchants")
+st.subheader("Top 5 Merchants This Month")
 if not df_merchants.empty:
     table_df = df_merchants.rename(
         columns={
@@ -115,8 +98,42 @@ if not df_merchants.empty:
             "total": "Total (SGD)",
         }
     )
-
-    cols = [c for c in ["Merchant", "Transactions", "Total (SGD)"] if c in table_df.columns]
-    st.dataframe(table_df[cols], use_container_width=True, hide_index=True)
+    st.dataframe(
+        table_df[["Merchant", "Transactions", "Total (SGD)"]],
+        use_container_width=True,
+        hide_index=True,
+    )
 else:
     st.info("No data")
+
+st.divider()
+
+bottom_left, bottom_right = st.columns(2)
+
+with bottom_left:
+    st.subheader("Daily Spend Breakdown")
+    if not df_daily.empty:
+        daily_table = df_daily.copy()
+        daily_table["date"] = pd.to_datetime(daily_table["date"], errors="coerce")
+        daily_table = daily_table.dropna(subset=["date"]).sort_values("date", ascending=False)
+        daily_table["date"] = daily_table["date"].dt.strftime("%Y-%m-%d")
+        daily_table = daily_table.rename(columns={"date": "Date", "total": "Total (SGD)"})
+        st.dataframe(daily_table[["Date", "Total (SGD)"]], use_container_width=True, hide_index=True)
+    else:
+        st.info("No data")
+
+with bottom_right:
+    st.subheader("Monthly Spend Breakdown")
+    if not df_monthly.empty:
+        monthly_table = df_monthly.copy().sort_values("month", ascending=False)
+        monthly_table = monthly_table.rename(
+            columns={
+                "month": "Month",
+                "count": "Transactions",
+                "total": "Total (SGD)",
+            }
+        )
+        cols = [c for c in ["Month", "Transactions", "Total (SGD)"] if c in monthly_table.columns]
+        st.dataframe(monthly_table[cols], use_container_width=True, hide_index=True)
+    else:
+        st.info("No data")

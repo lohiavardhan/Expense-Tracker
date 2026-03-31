@@ -14,6 +14,11 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from bs4 import BeautifulSoup
 
+EXCLUDED_MERCHANTS = {
+    "Coinbase A/C ending 8646",
+    "IFAST FINANCIAL PL-CT SUB",
+}
+
 # DETECT ENVIRONEMNT
 IS_AWS = os.path.exists('/home/ubuntu')
 IS_AIRFLOW = 'airflow' in sys.modules or os.environ.get('AIRFLOW_HOME')
@@ -323,8 +328,12 @@ def generate_dashboard(**context):
         return
 
     df = pd.concat(frames, ignore_index=True)
-    print("Rows with parsed date:", df["date"].notna().sum())
+    if "to_merchant" in df.columns:
+        df = df[~df["to_merchant"].fillna("").isin(EXCLUDED_MERCHANTS)].copy()
+
+    print("Rows with parsed date:", df["date"].notna().sum() if "date" in df.columns else 0)
     print("Total rows:", len(df))
+
     con = duckdb.connect()
 
     spend_by_type = con.execute("""
@@ -338,32 +347,34 @@ def generate_dashboard(**context):
 
     top_merchants = con.execute("""
         SELECT to_merchant,
-               COUNT(*) AS count,
-               ROUND(SUM(CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
+            COUNT(*) AS count,
+            ROUND(SUM(CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
         FROM df
         WHERE to_merchant IS NOT NULL
+        AND TRY_CAST(date AS TIMESTAMP) IS NOT NULL
+        AND STRFTIME(TRY_CAST(date AS TIMESTAMP), '%Y-%m') = STRFTIME(CURRENT_DATE, '%Y-%m')
         GROUP BY to_merchant
         ORDER BY total DESC
-        LIMIT 10
+        LIMIT 5
     """).df()
 
     daily_spend = con.execute("""
-    SELECT CAST(TRY_CAST(date AS TIMESTAMP) AS DATE) AS date,
-       ROUND(SUM(CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
-    FROM df
-    WHERE TRY_CAST(date AS TIMESTAMP) IS NOT NULL
-    GROUP BY date
-    ORDER BY date
+        SELECT CAST(TRY_CAST(date AS TIMESTAMP) AS DATE) AS date,
+            ROUND(SUM(CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
+        FROM df
+        WHERE TRY_CAST(date AS TIMESTAMP) IS NOT NULL
+        GROUP BY date
+        ORDER BY date
     """).df()
 
     monthly_spend = con.execute("""
-    SELECT STRFTIME(TRY_CAST(date AS TIMESTAMP), '%Y-%m') AS month,
-           COUNT(*) AS count,
-           ROUND(SUM(CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
-    FROM df
-    WHERE TRY_CAST(date AS TIMESTAMP) IS NOT NULL
-    GROUP BY month
-    ORDER BY month
+        SELECT STRFTIME(TRY_CAST(date AS TIMESTAMP), '%Y-%m') AS month,
+            COUNT(*) AS count,
+            ROUND(SUM(CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
+        FROM df
+        WHERE TRY_CAST(date AS TIMESTAMP) IS NOT NULL
+        GROUP BY month
+        ORDER BY month
     """).df()
 
     dashboard_data = {
