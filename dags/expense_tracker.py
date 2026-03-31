@@ -318,11 +318,11 @@ def generate_dashboard(**context):
 
     daily_spend = con.execute("""
     SELECT CAST(TRY_CAST(date AS TIMESTAMP) AS DATE) AS date,
-           ROUND(SUM(CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
+       ROUND(SUM(CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
     FROM df
     WHERE TRY_CAST(date AS TIMESTAMP) IS NOT NULL
-    GROUP BY day
-    ORDER BY day
+    GROUP BY date
+    ORDER BY date
     """).df()
 
     monthly_spend = con.execute("""
