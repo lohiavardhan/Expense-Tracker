@@ -111,7 +111,10 @@ def get_existing_warehouse_ids():
 # FETCH EMAIL
 def fetch_emails(**context):
     service = get_gmail_service()
-    results = service.users().messages().list(userId='me', q='newer_than:6h').execute()
+    results = service.users().messages().list(
+        userId='me',
+        q='from:ibanking.alert@dbs.com'
+    ).execute()
     messages = results.get('messages', [])
     banking_emails = []
 
