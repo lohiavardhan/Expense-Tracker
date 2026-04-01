@@ -77,11 +77,10 @@ monthly_spend_value = float(data.get("cycle_spend", 0.0))
 transactions_this_month = int(data.get("cycle_transactions", 0))
 
 
-top1, top2, top3, top4 = st.columns(4)
+top1, top2, top3 = st.columns(3)
 top1.metric("Daily Spend", f"${daily_spend_value:,.2f}")
 top2.metric("Monthly Spend", f"${monthly_spend_value:,.2f}")
 top3.metric("Total Transactions This Cycle", transactions_this_month)
-top4.metric("Current Cycle Merchants", len(df_merchants) if not df_merchants.empty else 0)
 
 st.caption(f"Cycle: {cycle_start} to {cycle_end}")
 
