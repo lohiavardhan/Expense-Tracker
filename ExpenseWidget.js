@@ -14,7 +14,7 @@ function formatSGD(amount) {
 
 async function createWidget(data) {
   const widget = new ListWidget()
-  widget.backgroundColor = new Color("#000000")
+  widget.backgroundColor = new Color("#1c1c1e")
   widget.setPadding(16, 16, 16, 16)
 
   const todayLabel = widget.addText("TODAY")
@@ -39,12 +39,18 @@ async function createWidget(data) {
 
   widget.url = "http://98.82.115.127:8501/"
 
+  // Refresh at the top of the next hour
+  const now = new Date()
+  const nextHour = new Date(now)
+  nextHour.setHours(now.getHours() + 1, 0, 0, 0)
+  widget.refreshAfterDate = nextHour
+
   return widget
 }
 
 async function createErrorWidget(message) {
   const widget = new ListWidget()
-  widget.backgroundColor = new Color("#000000")
+  widget.backgroundColor = new Color("#1c1c1e")
   widget.setPadding(16, 16, 16, 16)
 
   const err = widget.addText(message)
