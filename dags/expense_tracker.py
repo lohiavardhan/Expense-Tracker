@@ -134,6 +134,30 @@ def get_existing_warehouse_ids():
     return existing
 
 
+def get_last_successful_run():
+    """Read the last successful run timestamp from S3. Returns None if not found."""
+    if not IS_AWS:
+        return None
+    try:
+        response = s3.get_object(Bucket=S3_BUCKET, Key='metadata/last_successful_run.json')
+        data = json.loads(response['Body'].read())
+        return datetime.fromisoformat(data['timestamp'])
+    except Exception:
+        return None
+
+
+def save_last_successful_run():
+    """Write the current timestamp as the last successful run to S3."""
+    if not IS_AWS:
+        return
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key='metadata/last_successful_run.json',
+        Body=json.dumps({'timestamp': datetime.now().isoformat()}).encode(),
+        ContentType='application/json',
+    )
+
+
 # FETCH EMAIL
 def fetch_emails(**context):
     service = get_gmail_service()
@@ -146,7 +170,14 @@ def fetch_emails(**context):
         since = (datetime.now() - timedelta(days=365)).strftime('%Y/%m/%d')
         print(f"Backfill mode: fetching emails since {since}")
     else:
-        since = (datetime.now() - timedelta(days=2)).strftime('%Y/%m/%d')
+        last_run = get_last_successful_run()
+        if last_run:
+            # Add 1-hour buffer to avoid missing emails due to delivery delays
+            since = (last_run - timedelta(hours=1)).strftime('%Y/%m/%d')
+            print(f"Fetching emails since last successful run: {last_run} (with 1h buffer: {since})")
+        else:
+            since = (datetime.now() - timedelta(days=2)).strftime('%Y/%m/%d')
+            print(f"No previous run found, falling back to 2-day lookback: {since}")
 
     query = f'from:ibanking.alert@dbs.com after:{since}'
 
@@ -476,6 +507,7 @@ def generate_dashboard(**context):
         ContentType='application/json',
     )
 
+    save_last_successful_run()
     print(f"Dashboard data saved: {len(df)} transactions across {len(daily_spend)} days")
 
 
