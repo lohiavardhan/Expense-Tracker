@@ -3,7 +3,6 @@ import os
 from datetime import datetime, timezone, timedelta
 
 import boto3
-import uvicorn
 from botocore.exceptions import ClientError
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,8 +42,7 @@ def get_widget_data():
     daily_spend = 0.0
     for entry in data.get("daily_spend", []):
         date_val = entry.get("date", "")
-        # date field may be full ISO string or just YYYY-MM-DD
-        if isinstance(date_val, str) and date_val[:10] == today_str:
+            if isinstance(date_val, str) and date_val[:10] == today_str:
             daily_spend += float(entry.get("total", 0))
 
     monthly_spend = float(data.get("cycle_spend", 0.0))
@@ -66,7 +64,3 @@ def get_widget_data():
         "cycle_end": data.get("cycle_end", ""),
         "generated_at": data.get("generated_at", ""),
     }
-
-
-if __name__ == "__main__":
-    uvicorn.run("widget_api:app", host="0.0.0.0", port=8051, reload=False)

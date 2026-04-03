@@ -1,18 +1,23 @@
 import os
-import sys
 import json
 import base64
 import re
 import io
 from datetime import datetime, timedelta
-from pathlib import Path
+
+import boto3
+import pyarrow as pa
+import pyarrow.parquet as pq
 import duckdb
 import pandas as pd
+from dotenv import load_dotenv
 
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from bs4 import BeautifulSoup
+
+load_dotenv('/home/ubuntu/expense-tracker/.env')
 
 EXCLUDED_MERCHANTS = {
     "Coinbase A/C ending 8646",
@@ -20,28 +25,11 @@ EXCLUDED_MERCHANTS = {
     "Vardhan Lohia A/C ending 1467",
 }
 
-# DETECT ENVIRONEMNT
-IS_AWS = os.path.exists('/home/ubuntu')
-IS_AIRFLOW = 'airflow' in sys.modules or os.environ.get('AIRFLOW_HOME')
-
-if IS_AWS:
-    import boto3
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-    from dotenv import load_dotenv
-    load_dotenv('/home/ubuntu/expense-tracker/.env')
-
-# CONFIG
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
-
-if IS_AWS:
-    TOKEN_PATH = '/home/ubuntu/expense-tracker/token.json'
-    S3_BUCKET = os.environ.get('S3_BUCKET', 'expense-tracker-vardhan')
-    AWS_REGION = 'ap-southeast-1'
-    s3 = boto3.client('s3', region_name=AWS_REGION)
-else:
-    TOKEN_PATH = str(Path(__file__).resolve().parent.parent / 'token.json')
-    S3_BUCKET = None
+TOKEN_PATH = '/home/ubuntu/expense-tracker/token.json'
+S3_BUCKET = os.environ.get('S3_BUCKET', 'expense-tracker-vardhan')
+AWS_REGION = 'ap-southeast-1'
+s3 = boto3.client('s3', region_name=AWS_REGION)
 
 default_args = {
     'owner': 'vardhan',
@@ -50,7 +38,6 @@ default_args = {
 }
 
 
-# HELPERS
 def get_gmail_service():
     creds = None
     if os.path.exists(TOKEN_PATH):
@@ -103,9 +90,6 @@ def get_header(headers, name):
 
 
 def save_to_s3(key, data, content_type='application/json'):
-    """Upload to S3 only if running on AWS."""
-    if not IS_AWS:
-        return
     try:
         s3.head_object(Bucket=S3_BUCKET, Key=key)
     except s3.exceptions.ClientError:
@@ -118,9 +102,6 @@ def save_to_s3(key, data, content_type='application/json'):
 
 
 def get_existing_warehouse_ids():
-    """Get email_ids already in S3 warehouse to avoid duplicates."""
-    if not IS_AWS:
-        return set()
     existing = set()
     try:
         paginator = s3.get_paginator('list_objects_v2')
@@ -135,9 +116,6 @@ def get_existing_warehouse_ids():
 
 
 def get_last_successful_run():
-    """Read the last successful run timestamp from S3. Returns None if not found."""
-    if not IS_AWS:
-        return None
     try:
         response = s3.get_object(Bucket=S3_BUCKET, Key='metadata/last_successful_run.json')
         data = json.loads(response['Body'].read())
@@ -147,9 +125,6 @@ def get_last_successful_run():
 
 
 def save_last_successful_run():
-    """Write the current timestamp as the last successful run to S3."""
-    if not IS_AWS:
-        return
     s3.put_object(
         Bucket=S3_BUCKET,
         Key='metadata/last_successful_run.json',
@@ -158,7 +133,6 @@ def save_last_successful_run():
     )
 
 
-# FETCH EMAIL
 def fetch_emails(**context):
     service = get_gmail_service()
 
@@ -172,7 +146,6 @@ def fetch_emails(**context):
     else:
         last_run = get_last_successful_run()
         if last_run:
-            # Add 1-hour buffer to avoid missing emails due to delivery delays
             since = (last_run - timedelta(hours=1)).strftime('%Y/%m/%d')
             print(f"Fetching emails since last successful run: {last_run} (with 1h buffer: {since})")
         else:
@@ -202,25 +175,18 @@ def fetch_emails(**context):
 
     print(f"Fetched {len(banking_emails)} banking emails (backfill={backfill})")
 
-    # Airflow mode: push to XCom
     if context.get('ti'):
         context['ti'].xcom_push(key='banking', value=banking_emails)
 
     return banking_emails
 
 
-# LOAD TO LAKE
 def load_to_lake(banking=None, **context):
-    # Airflow mode: pull from XCom
     if banking is None and context.get('ti'):
         banking = context['ti'].xcom_pull(task_ids='fetch_emails', key='banking')
 
     if not banking:
         print("No emails to save to lakehouse")
-        return
-
-    if not IS_AWS:
-        print(f"Skipping lakehouse save (not on AWS) — {len(banking)} emails")
         return
 
     date_prefix = datetime.now().strftime('%Y/%m/%d')
@@ -235,9 +201,7 @@ def load_to_lake(banking=None, **context):
     print(f"Saved {saved} raw emails to s3://{S3_BUCKET}/raw/{date_prefix}/")
 
 
-# PARSE EMAIL
 def parse_emails(banking=None, **context):
-    # Airflow mode: pull from XCom
     if banking is None and context.get('ti'):
         banking = context['ti'].xcom_pull(task_ids='fetch_emails', key='banking')
 
@@ -303,7 +267,7 @@ def parse_emails(banking=None, **context):
         print(f"RAW DATE: {raw_date} | PARSED DATE: {parsed_date} | SUBJECT: {subject}")
 
         date_prefix = datetime.now().strftime('%Y/%m/%d')
-        s3_raw_path = f"s3://{S3_BUCKET}/raw/{date_prefix}/{detail['id']}.json" if IS_AWS else None
+        s3_raw_path = f"s3://{S3_BUCKET}/raw/{date_prefix}/{detail['id']}.json"
 
         transactions.append({
             'email_id': detail['id'],
@@ -318,8 +282,7 @@ def parse_emails(banking=None, **context):
             'created_at': datetime.now().isoformat(),
         })
 
-    # Save processed JSON to S3
-    if IS_AWS and transactions:
+    if transactions:
         date_prefix = datetime.now().strftime('%Y/%m/%d')
         run_id = datetime.now().strftime('%H%M%S')
         save_to_s3(
@@ -329,16 +292,13 @@ def parse_emails(banking=None, **context):
 
     print(f"Parsed {len(transactions)} transactions")
 
-    # Airflow mode: push to XCom
     if context.get('ti'):
         context['ti'].xcom_push(key='transactions', value=transactions)
 
     return transactions
 
 
-# LOAD TO WAREHOUSE
 def load_to_warehouse(transactions=None, **context):
-    # Airflow mode: pull from XCom
     if transactions is None and context.get('ti'):
         transactions = context['ti'].xcom_pull(task_ids='parse_emails', key='transactions')
 
@@ -346,14 +306,6 @@ def load_to_warehouse(transactions=None, **context):
         print("No transactions to load")
         return
 
-    if not IS_AWS:
-        # Local mode: just print results
-        print("\n── Transactions ──")
-        for txn in transactions:
-            print(f"  {txn['date']} | {txn['amount']:>10} | {txn['type']:<7} | {txn['to_merchant']}")
-        return
-
-    # AWS mode: write Parquet to S3 warehouse
     existing_ids = get_existing_warehouse_ids()
     new_transactions = [t for t in transactions if t['email_id'] not in existing_ids]
 
@@ -380,13 +332,7 @@ def load_to_warehouse(transactions=None, **context):
     print(f"Wrote {len(new_transactions)} new transactions to warehouse")
 
 
-# GENERATE DASHBOARD DATA
 def generate_dashboard(**context):
-    if not IS_AWS:
-        print("Skipping dashboard generation (not on AWS)")
-        return
-
-    # Read all parquet files from warehouse
     paginator = s3.get_paginator('list_objects_v2')
     frames = []
     for page in paginator.paginate(Bucket=S3_BUCKET, Prefix='warehouse/'):
@@ -487,17 +433,17 @@ def generate_dashboard(**context):
     """).df()
 
     dashboard_data = {
-    'generated_at': datetime.now().isoformat(),
-    'cycle_start': cycle_start.date().isoformat(),
-    'cycle_end': cycle_end.date().isoformat(),
-    'total_transactions': int(len(df)),
-    'cycle_spend': float(cycle_spend["total"].iloc[0]) if not cycle_spend.empty and pd.notna(cycle_spend["total"].iloc[0]) else 0.0,
-    'cycle_transactions': int(cycle_transactions["count"].iloc[0]) if not cycle_transactions.empty else 0,
-    'spend_by_type': json.loads(spend_by_type.to_json(orient='records')),
-    'top_merchants': json.loads(top_merchants.to_json(orient='records')),
-    'daily_spend': json.loads(daily_spend.to_json(orient='records', date_format='iso')),
-    'today_transactions': json.loads(today_transactions.to_json(orient='records')),
-    'monthly_spend': json.loads(monthly_spend.to_json(orient='records')),
+        'generated_at': datetime.now().isoformat(),
+        'cycle_start': cycle_start.date().isoformat(),
+        'cycle_end': cycle_end.date().isoformat(),
+        'total_transactions': int(len(df)),
+        'cycle_spend': float(cycle_spend["total"].iloc[0]) if not cycle_spend.empty and pd.notna(cycle_spend["total"].iloc[0]) else 0.0,
+        'cycle_transactions': int(cycle_transactions["count"].iloc[0]) if not cycle_transactions.empty else 0,
+        'spend_by_type': json.loads(spend_by_type.to_json(orient='records')),
+        'top_merchants': json.loads(top_merchants.to_json(orient='records')),
+        'daily_spend': json.loads(daily_spend.to_json(orient='records', date_format='iso')),
+        'today_transactions': json.loads(today_transactions.to_json(orient='records')),
+        'monthly_spend': json.loads(monthly_spend.to_json(orient='records')),
     }
 
     s3.put_object(
@@ -511,38 +457,24 @@ def generate_dashboard(**context):
     print(f"Dashboard data saved: {len(df)} transactions across {len(daily_spend)} days")
 
 
-# AIRFLOW DAG
-if IS_AIRFLOW:
-    from airflow import DAG
-    from airflow.operators.python import PythonOperator
+from airflow import DAG
+from airflow.operators.python import PythonOperator
 
-    with DAG(
-        dag_id='expense_tracker',
-        default_args=default_args,
-        description='Track expenses: Gmail → S3 data lake → Athena warehouse',
-        schedule_interval='@hourly',
-        start_date=datetime(2026, 3, 29),
-        catchup=False,
-        tags=['expenses'],
-    ) as dag:
+with DAG(
+    dag_id='expense_tracker',
+    default_args=default_args,
+    description='Track expenses: Gmail -> S3 data lake -> Athena warehouse',
+    schedule_interval='@hourly',
+    start_date=datetime(2026, 3, 29),
+    catchup=False,
+    tags=['expenses'],
+) as dag:
 
-        t1 = PythonOperator(task_id='fetch_emails', python_callable=fetch_emails)
-        t_lake = PythonOperator(task_id='load_to_lake', python_callable=load_to_lake)
-        t2 = PythonOperator(task_id='parse_emails', python_callable=parse_emails)
-        t3 = PythonOperator(task_id='load_to_warehouse', python_callable=load_to_warehouse)
-        t4 = PythonOperator(task_id='generate_dashboard', python_callable=generate_dashboard)
+    t1 = PythonOperator(task_id='fetch_emails', python_callable=fetch_emails)
+    t_lake = PythonOperator(task_id='load_to_lake', python_callable=load_to_lake)
+    t2 = PythonOperator(task_id='parse_emails', python_callable=parse_emails)
+    t3 = PythonOperator(task_id='load_to_warehouse', python_callable=load_to_warehouse)
+    t4 = PythonOperator(task_id='generate_dashboard', python_callable=generate_dashboard)
 
-        t1 >> t_lake
-        t1 >> t2 >> t3 >> t4
-
-
-# LOCAL EXECUTION FOR MAC
-if __name__ == '__main__':
-    print(f"Running {'on AWS' if IS_AWS else 'locally on Mac'}")
-    print(f"Token path: {TOKEN_PATH}\n")
-
-    banking = fetch_emails()
-    load_to_lake(banking)
-    transactions = parse_emails(banking)
-    load_to_warehouse(transactions)
-    generate_dashboard()
+    t1 >> t_lake
+    t1 >> t2 >> t3 >> t4

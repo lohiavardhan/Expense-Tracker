@@ -1,5 +1,5 @@
 // Expense Tracker Widget for Scriptable
-const API_BASE = "http://98.82.115.127:8051"
+const API_BASE = "API_BASE_HERE:8051"
 
 async function fetchWidgetData() {
   const url = `${API_BASE}/widget`
@@ -37,7 +37,6 @@ async function createWidget(data) {
 
   widget.addSpacer()
 
-  widget.url = "http://98.82.115.127:8501/"
 
   // Refresh at the top of the next hour
   const now = new Date()
