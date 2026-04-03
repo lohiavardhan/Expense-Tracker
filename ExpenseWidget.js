@@ -37,6 +37,8 @@ async function createWidget(data) {
 
   widget.addSpacer()
 
+  // Open dashboard when widget is tapped
+  widget.url = "http://{API_BASE_HERE}:8501/"
 
   // Refresh at the top of the next hour
   const now = new Date()
