@@ -477,9 +477,9 @@ with DAG(
     dag_id='expense_tracker',
     default_args=default_args,
     description='Track expenses: Gmail -> S3 raw lake -> Parquet warehouse -> DuckDB analytics',
-    schedule_interval='@daily',
+    schedule_interval='@hourly',
     start_date=datetime(2026, 1, 1),
-    catchup=True,
+    catchup=False,
     tags=['expenses'],
 ) as dag:
 
