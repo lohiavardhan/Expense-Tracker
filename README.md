@@ -10,15 +10,15 @@ An automated personal expense tracking pipeline that ingests DBS bank transactio
 
 - **Schedule**: `@hourly`
 - **Lookback**: Since last successful run (falls back to 2 days), 365 days (backfill mode)
-- **Deduplication**: by `email_id` against existing warehouse Parquet files
+- **Deduplication**: by `email_id` against the existing warehouse Parquet file
 
 ## Data Flow
 
 1. **fetch_emails** — queries Gmail API for `ibanking.alert@dbs.com` emails
 2. **load_to_lake** — saves raw email JSON to `s3://bucket/raw/{date}/`
 3. **parse_emails** — extracts amount, merchant, date, type (Card/PayNow) using regex on HTML body
-4. **load_to_warehouse** — writes individual Parquet files to `s3://bucket/warehouse/`, skipping duplicates
-5. **generate_dashboard** — reads all warehouse Parquet files, runs DuckDB aggregations (daily spend, monthly spend, top merchants, etc.), writes `dashboard/latest.json` to S3
+4. **load_to_warehouse** — merges transformed records into a single Parquet file at `s3://bucket/warehouse/transactions.parquet`, skipping duplicates
+5. **generate_dashboard** — reads the warehouse Parquet file, runs DuckDB aggregations (daily spend, monthly spend, top merchants, etc.), writes `dashboard/latest.json` to S3
 
 ## Billing Cycle
 
