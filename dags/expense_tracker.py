@@ -17,6 +17,10 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from bs4 import BeautifulSoup
 
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+
 load_dotenv('/home/ubuntu/expense-tracker/.env')
 
 EXCLUDED_MERCHANTS = {
@@ -101,18 +105,29 @@ def save_to_s3(key, data, content_type='application/json'):
         )
 
 
-def get_existing_warehouse_ids():
-    existing = set()
+WAREHOUSE_KEY = 'warehouse/transactions.parquet'
+
+
+def get_existing_warehouse_table():
+    """Download the single warehouse parquet file and return it as a PyArrow Table (or None)."""
     try:
-        paginator = s3.get_paginator('list_objects_v2')
-        for page in paginator.paginate(Bucket=S3_BUCKET, Prefix='warehouse/'):
-            for obj in page.get('Contents', []):
-                filename = obj['Key'].split('/')[-1]
-                if filename.endswith('.parquet'):
-                    existing.add(filename.replace('.parquet', ''))
+        response = s3.get_object(Bucket=S3_BUCKET, Key=WAREHOUSE_KEY)
+        buf = io.BytesIO(response['Body'].read())
+        return pq.read_table(buf)
+    except s3.exceptions.ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            return None
+        raise
     except Exception as e:
-        print(f"Warning: could not check existing warehouse files: {e}")
-    return existing
+        print(f"Warning: could not read warehouse file: {e}")
+        return None
+
+
+def get_existing_warehouse_ids():
+    existing_table = get_existing_warehouse_table()
+    if existing_table is not None and 'email_id' in existing_table.column_names:
+        return set(existing_table.column('email_id').to_pylist())
+    return set()
 
 
 def get_last_successful_run():
@@ -136,23 +151,24 @@ def save_last_successful_run():
 def fetch_emails(**context):
     service = get_gmail_service()
 
-    backfill = False
-    if context.get('dag_run') and context['dag_run'].conf:
-        backfill = context['dag_run'].conf.get('backfill', False)
+    # Use Airflow's execution context dates — this makes backfill work natively.
+    # data_interval_start/end are provided automatically by Airflow for every run,
+    # including backfill runs. Gmail's after/before only support date granularity,
+    # so hourly runs on the same day will overlap, but load_to_warehouse dedupes by email_id.
+    ds_start = context.get('data_interval_start')
+    ds_end = context.get('data_interval_end')
 
-    if backfill:
-        since = (datetime.now() - timedelta(days=365)).strftime('%Y/%m/%d')
-        print(f"Backfill mode: fetching emails since {since}")
+    if ds_start:
+        since = (ds_start - timedelta(hours=1)).strftime('%Y/%m/%d')
     else:
-        last_run = get_last_successful_run()
-        if last_run:
-            since = (last_run - timedelta(hours=1)).strftime('%Y/%m/%d')
-            print(f"Fetching emails since last successful run: {last_run} (with 1h buffer: {since})")
-        else:
-            since = (datetime.now() - timedelta(days=2)).strftime('%Y/%m/%d')
-            print(f"No previous run found, falling back to 2-day lookback: {since}")
+        since = (datetime.now() - timedelta(days=2)).strftime('%Y/%m/%d')
 
     query = f'from:ibanking.alert@dbs.com after:{since}'
+    if ds_end:
+        before = (ds_end + timedelta(days=1)).strftime('%Y/%m/%d')
+        query += f' before:{before}'
+
+    print(f"Gmail query: {query}")
 
     messages = []
     page_token = None
@@ -173,7 +189,7 @@ def fetch_emails(**context):
         if from_header and 'ibanking.alert@dbs.com' in from_header:
             banking_emails.append(detail)
 
-    print(f"Fetched {len(banking_emails)} banking emails (backfill={backfill})")
+    print(f"Fetched {len(banking_emails)} banking emails")
 
     if context.get('ti'):
         context['ti'].xcom_push(key='banking', value=banking_emails)
@@ -306,47 +322,46 @@ def load_to_warehouse(transactions=None, **context):
         print("No transactions to load")
         return
 
-    existing_ids = get_existing_warehouse_ids()
+    existing_table = get_existing_warehouse_table()
+    existing_ids = set()
+    if existing_table is not None and 'email_id' in existing_table.column_names:
+        existing_ids = set(existing_table.column('email_id').to_pylist())
+
     new_transactions = [t for t in transactions if t['email_id'] not in existing_ids]
 
     if not new_transactions:
         print("All transactions already in warehouse")
         return
 
-    for txn in new_transactions:
-        table = pa.table({k: [txn[k]] for k in txn})
-        date_prefix = datetime.now().strftime('%Y/%m/%d')
-        s3_key = f"warehouse/{date_prefix}/{txn['email_id']}.parquet"
+    new_table = pa.table({k: [txn[k] for txn in new_transactions] for k in new_transactions[0]})
 
-        buf = io.BytesIO()
-        pq.write_table(table, buf, compression='snappy')
-        buf.seek(0)
+    if existing_table is not None:
+        combined_table = pa.concat_tables([existing_table, new_table], promote_options='default')
+    else:
+        combined_table = new_table
 
-        s3.put_object(
-            Bucket=S3_BUCKET,
-            Key=s3_key,
-            Body=buf.getvalue(),
-            ContentType='application/octet-stream',
-        )
+    buf = io.BytesIO()
+    pq.write_table(combined_table, buf, compression='snappy')
+    buf.seek(0)
 
-    print(f"Wrote {len(new_transactions)} new transactions to warehouse")
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key=WAREHOUSE_KEY,
+        Body=buf.getvalue(),
+        ContentType='application/octet-stream',
+    )
+
+    print(f"Appended {len(new_transactions)} new transactions to warehouse (total: {combined_table.num_rows})")
 
 
 def generate_dashboard(**context):
-    paginator = s3.get_paginator('list_objects_v2')
-    frames = []
-    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix='warehouse/'):
-        for obj in page.get('Contents', []):
-            if obj['Key'].endswith('.parquet'):
-                response = s3.get_object(Bucket=S3_BUCKET, Key=obj['Key'])
-                buf = io.BytesIO(response['Body'].read())
-                frames.append(pq.read_table(buf).to_pandas())
+    existing_table = get_existing_warehouse_table()
 
-    if not frames:
+    if existing_table is None or existing_table.num_rows == 0:
         print("No warehouse data found for dashboard")
         return
 
-    df = pd.concat(frames, ignore_index=True)
+    df = existing_table.to_pandas()
     if "to_merchant" in df.columns:
         df = df[~df["to_merchant"].fillna("").isin(EXCLUDED_MERCHANTS)].copy()
     df["parsed_ts"] = pd.to_datetime(df["date"], errors="coerce")
@@ -457,16 +472,14 @@ def generate_dashboard(**context):
     print(f"Dashboard data saved: {len(df)} transactions across {len(daily_spend)} days")
 
 
-from airflow import DAG
-from airflow.operators.python import PythonOperator
 
 with DAG(
     dag_id='expense_tracker',
     default_args=default_args,
     description='Track expenses: Gmail -> S3 raw lake -> Parquet warehouse -> DuckDB analytics',
-    schedule_interval='@hourly',
-    start_date=datetime(2026, 3, 29),
-    catchup=False,
+    schedule_interval='@daily',
+    start_date=datetime(2026, 1, 1),
+    catchup=True,
     tags=['expenses'],
 ) as dag:
 
