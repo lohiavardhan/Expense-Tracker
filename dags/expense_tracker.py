@@ -325,6 +325,14 @@ def parse_emails(banking=None, **context):
                         except ValueError:
                             pass
 
+        if is_incoming:
+            print(f"[INCOMING DEBUG] SUBJECT: {subject}")
+            print(f"[INCOMING DEBUG] BODY TEXT (first 300): {repr(text[:300])}")
+            print(f"[INCOMING DEBUG] AMOUNT MATCH: {amount}")
+            print(f"[INCOMING DEBUG] AMOUNT VALUE: {amount.group(1) if amount else 'NONE'}")
+            print(f"[INCOMING DEBUG] DATE MATCH: {date_match}")
+            print(f"[INCOMING DEBUG] FROM: {from_card.group(1).strip() if from_card else 'NONE'}")
+            print(f"[INCOMING DEBUG] TO: {to_merchant.group(1).strip() if to_merchant else 'NONE'}")
         print(f"RAW DATE: {raw_date} | PARSED DATE: {parsed_date} | SUBJECT: {subject}")
 
         date_prefix = datetime.now().strftime('%Y/%m/%d')
