@@ -325,15 +325,7 @@ def parse_emails(banking=None, **context):
                         except ValueError:
                             pass
 
-        if is_incoming:
-            print(f"[INCOMING DEBUG] SUBJECT: {subject}")
-            print(f"[INCOMING DEBUG] BODY TEXT (first 300): {repr(text[:300])}")
-            print(f"[INCOMING DEBUG] AMOUNT MATCH: {amount}")
-            print(f"[INCOMING DEBUG] AMOUNT VALUE: {amount.group(1) if amount else 'NONE'}")
-            print(f"[INCOMING DEBUG] DATE MATCH: {date_match}")
-            print(f"[INCOMING DEBUG] FROM: {from_card.group(1).strip() if from_card else 'NONE'}")
-            print(f"[INCOMING DEBUG] TO: {to_merchant.group(1).strip() if to_merchant else 'NONE'}")
-        print(f"RAW DATE: {raw_date} | PARSED DATE: {parsed_date} | SUBJECT: {subject}")
+        print(f"RAW DATE: {raw_date} | PARSED DATE: {parsed_date} | DIRECTION: {direction} | SUBJECT: {subject}")
 
         date_prefix = datetime.now().strftime('%Y/%m/%d')
         s3_raw_path = f"s3://{S3_BUCKET}/raw/{date_prefix}/{detail['id']}.json"
@@ -381,7 +373,10 @@ def load_to_warehouse(transactions=None, **context):
     if existing_table is not None and 'email_id' in existing_table.column_names:
         existing_ids = set(existing_table.column('email_id').to_pylist())
 
-    new_transactions = [t for t in transactions if t['email_id'] not in existing_ids]
+    # Replace existing rows that had missing data (e.g. NULL amount) with new versions
+    incoming_ids = {t['email_id'] for t in transactions}
+    replace_ids = incoming_ids & existing_ids
+    new_transactions = [t for t in transactions if t['email_id'] not in existing_ids or t['email_id'] in replace_ids]
 
     if not new_transactions:
         print("All transactions already in warehouse")
@@ -390,6 +385,12 @@ def load_to_warehouse(transactions=None, **context):
     new_table = pa.table({k: [txn[k] for txn in new_transactions] for k in new_transactions[0]})
 
     if existing_table is not None:
+        # Remove old rows that are being replaced
+        if replace_ids:
+            existing_df = existing_table.to_pandas()
+            existing_df = existing_df[~existing_df['email_id'].isin(replace_ids)]
+            existing_table = pa.Table.from_pandas(existing_df, preserve_index=False)
+            print(f"Replacing {len(replace_ids)} existing rows with updated data")
         combined_table = pa.concat_tables([existing_table, new_table], promote_options='default')
     else:
         combined_table = new_table
