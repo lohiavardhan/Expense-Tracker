@@ -257,7 +257,7 @@ def parse_emails(banking=None, **context):
             direction = 'incoming'
 
             # Parse incoming format: "You have received SGD 200.00 via FAST transfer on 29 Mar 2026 09:44 SGT"
-            amount = re.search(r'received\s+(SGD[\d,.]+)', text)
+            amount = re.search(r'received\s+(SGD\s?[\d,.]+)', text)
             date_match = re.search(r'on\s+(\d+\s+\w+\s+\d{4}\s+\d+:\d+)\s+SGT', text)
             from_card = re.search(r'From:\s*(.+?)(?:\s{2,}|\n)', text)
             to_merchant = re.search(r'To:\s*(.+?)(?:\s{2,}|\n)', text)
@@ -414,6 +414,8 @@ def generate_dashboard(**context):
         df = df[~df["to_merchant"].fillna("").isin(EXCLUDED_MERCHANTS)].copy()
     if "direction" not in df.columns:
         df["direction"] = "outgoing"
+    else:
+        df["direction"] = df["direction"].fillna("outgoing")
     df["parsed_ts"] = pd.to_datetime(df["date"], errors="coerce")
 
     cycle_start, cycle_end = get_cycle_bounds()
@@ -431,7 +433,7 @@ def generate_dashboard(**context):
     spend_by_type = con.execute("""
         SELECT type,
                COUNT(*) AS count,
-               ROUND(SUM((CASE WHEN direction = 'incoming' THEN -1.0 ELSE 1.0 END) * CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
+               ROUND(SUM((CASE WHEN direction = 'incoming' THEN -1.0 ELSE 1.0 END) * CAST(REPLACE(REPLACE(REPLACE(amount, 'SGD', ''), ',', ''), ' ', '') AS DOUBLE)), 2) AS total
         FROM df
         GROUP BY type
         ORDER BY total DESC
@@ -441,7 +443,7 @@ def generate_dashboard(**context):
     top_merchants = con.execute(f"""
         SELECT to_merchant,
             COUNT(*) AS count,
-            ROUND(SUM(CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
+            ROUND(SUM(CAST(REPLACE(REPLACE(REPLACE(amount, 'SGD', ''), ',', ''), ' ', '') AS DOUBLE)), 2) AS total
         FROM df_cycle
         WHERE to_merchant IS NOT NULL
           AND to_merchant NOT IN ({excluded_merchants_sql})
@@ -452,7 +454,7 @@ def generate_dashboard(**context):
     """).df()
 
     cycle_spend = con.execute("""
-        SELECT ROUND(SUM((CASE WHEN direction = 'incoming' THEN -1.0 ELSE 1.0 END) * CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
+        SELECT ROUND(SUM((CASE WHEN direction = 'incoming' THEN -1.0 ELSE 1.0 END) * CAST(REPLACE(REPLACE(REPLACE(amount, 'SGD', ''), ',', ''), ' ', '') AS DOUBLE)), 2) AS total
         FROM df_cycle
     """).df()
 
@@ -463,7 +465,7 @@ def generate_dashboard(**context):
 
     daily_spend = con.execute("""
         SELECT CAST(TRY_CAST(date AS TIMESTAMP) AS DATE) AS date,
-            ROUND(SUM((CASE WHEN direction = 'incoming' THEN -1.0 ELSE 1.0 END) * CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
+            ROUND(SUM((CASE WHEN direction = 'incoming' THEN -1.0 ELSE 1.0 END) * CAST(REPLACE(REPLACE(REPLACE(amount, 'SGD', ''), ',', ''), ' ', '') AS DOUBLE)), 2) AS total
         FROM df_cycle
         WHERE TRY_CAST(date AS TIMESTAMP) IS NOT NULL
         GROUP BY 1
@@ -477,7 +479,7 @@ def generate_dashboard(**context):
             STRFTIME(TRY_CAST(date AS TIMESTAMP), '%H:%M') AS time,
             CASE WHEN direction = 'incoming' THEN from_account ELSE to_merchant END AS merchant,
             direction,
-            ROUND((CASE WHEN direction = 'incoming' THEN -1.0 ELSE 1.0 END) * CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE), 2) AS amount
+            ROUND((CASE WHEN direction = 'incoming' THEN -1.0 ELSE 1.0 END) * CAST(REPLACE(REPLACE(REPLACE(amount, 'SGD', ''), ',', ''), ' ', '') AS DOUBLE), 2) AS amount
         FROM df_cycle
         WHERE CAST(TRY_CAST(date AS TIMESTAMP) AS DATE) = '{today_sgt}'
           AND TRY_CAST(date AS TIMESTAMP) IS NOT NULL
@@ -492,7 +494,7 @@ def generate_dashboard(**context):
                 ELSE STRFTIME((DATE_TRUNC('month', TRY_CAST(date AS TIMESTAMP)) - INTERVAL '1 month') + INTERVAL '14 days', '%Y-%m-%d')
             END AS month,
             COUNT(*) AS count,
-            ROUND(SUM((CASE WHEN direction = 'incoming' THEN -1.0 ELSE 1.0 END) * CAST(REPLACE(REPLACE(amount, 'SGD', ''), ',', '') AS DOUBLE)), 2) AS total
+            ROUND(SUM((CASE WHEN direction = 'incoming' THEN -1.0 ELSE 1.0 END) * CAST(REPLACE(REPLACE(REPLACE(amount, 'SGD', ''), ',', ''), ' ', '') AS DOUBLE)), 2) AS total
         FROM df
         WHERE TRY_CAST(date AS TIMESTAMP) IS NOT NULL
         GROUP BY month
