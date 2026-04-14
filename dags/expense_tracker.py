@@ -26,6 +26,7 @@ load_dotenv('/home/ubuntu/expense-tracker/.env')
 EXCLUDED_MERCHANTS = {
     "Coinbase A/C ending 8646",
     "IFAST FINANCIAL PL-CT SUB",
+    "IFAST FINANCIAL PTE. LTD.",
 }
 
 VARDHAN_LOHIA_NAME = "vardhan lohia"
@@ -538,13 +539,6 @@ def generate_dashboard(**context):
         Body=json.dumps(dashboard_data).encode(),
         ContentType='application/json',
     )
-
-    # Debug: print all incoming transactions in the cycle
-    incoming_df = df_cycle[df_cycle["direction"] == "incoming"]
-    print(f"\n=== INCOMING TRANSACTIONS IN CYCLE ({len(incoming_df)} total) ===")
-    for _, row in incoming_df.iterrows():
-        print(f"  {row.get('date', 'NO DATE')} | from: {row.get('from_account', '?')} | to_merchant: {row.get('to_merchant', '?')} | amount: {row.get('amount', '?')} | direction: {row.get('direction', '?')}")
-    print(f"=== END INCOMING ===\n")
 
     save_last_successful_run()
     print(f"Dashboard data saved: {len(df)} transactions across {len(daily_spend)} days")
