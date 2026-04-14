@@ -249,12 +249,34 @@ def parse_emails(banking=None, **context):
         text = BeautifulSoup(html_content, 'html.parser').get_text()
 
         subject = get_header(headers, 'Subject') or ''
-        if 'Card' in subject:
+        subject_lower = subject.lower()
+
+        # Detect incoming transfer emails (digibank Alerts format)
+        if 'received a transfer' in subject_lower or 'received a paynow' in subject_lower:
+            txn_type = 'Transfer'
+            direction = 'incoming'
+
+            # Parse incoming format: "You have received SGD 200.00 via FAST transfer on 29 Mar 2026 09:44 SGT"
+            amount = re.search(r'received\s+(SGD[\d,.]+)', text)
+            date_match = re.search(r'on\s+(\d+\s+\w+\s+\d{4}\s+\d+:\d+)\s+SGT', text)
+            from_card = re.search(r'From:\s*(.+?)(?:\s{2,}|\n)', text)
+            to_merchant = re.search(r'To:\s*(.+?)(?:\s{2,}|\n)', text)
+
+            raw_date = date_match.group(1).strip() if date_match else None
+            parsed_date = None
+            if raw_date:
+                for fmt in ["%d %b %Y %H:%M", "%d %B %Y %H:%M"]:
+                    try:
+                        parsed_date = datetime.strptime(raw_date, fmt).isoformat()
+                        break
+                    except ValueError:
+                        pass
+
+        elif 'Card' in subject:
             txn_type = 'Card'
             direction = 'outgoing'
         elif 'PayNow' in subject or 'iBanking' in subject:
             txn_type = 'PayNow'
-            subject_lower = subject.lower()
             if 'credit' in subject_lower or 'received' in subject_lower:
                 direction = 'incoming'
             else:
@@ -263,45 +285,47 @@ def parse_emails(banking=None, **context):
             print(f"Skipping non-transaction email: {subject}")
             continue
 
-        amount = re.search(r'Amount:\s*(SGD[\d,.]+)', text)
-        date_match = re.search(r'Date & Time:\s*(.+?)(?:\s{2,}|\n)', text)
-        to_merchant = re.search(r'To:\s*(.+?)(?:\s*\(UEN|\s*If\s|(?:\s{2,}|\n))', text)
-        from_card = re.search(r'From:\s*(.+?)(?:\s{2,}|\n)', text)
+        # For outgoing/standard format, parse fields the normal way
+        if direction != 'incoming' or txn_type != 'Transfer':
+            amount = re.search(r'Amount:\s*(SGD[\d,.]+)', text)
+            date_match = re.search(r'Date & Time:\s*(.+?)(?:\s{2,}|\n)', text)
+            to_merchant = re.search(r'To:\s*(.+?)(?:\s*\(UEN|\s*If\s|(?:\s{2,}|\n))', text)
+            from_card = re.search(r'From:\s*(.+?)(?:\s{2,}|\n)', text)
 
-        # If from_account is Vardhan Lohia's account, it's an incoming self-transfer
-        from_account_str = from_card.group(1).strip() if from_card else ''
-        if VARDHAN_LOHIA_ACCOUNT.lower() in from_account_str.lower():
-            direction = 'incoming'
+            # If from_account is Vardhan Lohia's account, it's an incoming self-transfer
+            from_account_str = from_card.group(1).strip() if from_card else ''
+            if VARDHAN_LOHIA_ACCOUNT.lower() in from_account_str.lower():
+                direction = 'incoming'
 
-        email_date_header = get_header(headers, "Date")
-        email_dt = None
-        if email_date_header:
-            try:
-                email_dt = datetime.strptime(email_date_header, "%a, %d %b %Y %H:%M:%S %z")
-            except ValueError:
-                email_dt = None
+            email_date_header = get_header(headers, "Date")
+            email_dt = None
+            if email_date_header:
+                try:
+                    email_dt = datetime.strptime(email_date_header, "%a, %d %b %Y %H:%M:%S %z")
+                except ValueError:
+                    email_dt = None
 
-        raw_date = date_match.group(1).strip() if date_match else None
-        parsed_date = None
+            raw_date = date_match.group(1).strip() if date_match else None
+            parsed_date = None
 
-        if raw_date:
-            cleaned = raw_date.replace("(SGT)", "").strip()
-            cleaned = " ".join(cleaned.split())
+            if raw_date:
+                cleaned = raw_date.replace("(SGT)", "").strip()
+                cleaned = " ".join(cleaned.split())
 
-            if email_dt:
-                cleaned_with_year = f"{cleaned} {email_dt.year}"
-                for fmt in [
-                    "%d %b %H:%M %Y",
-                    "%d %B %H:%M %Y",
-                    "%d/%m %H:%M %Y",
-                    "%d %b %I:%M %p %Y",
-                    "%d %B %I:%M %p %Y",
-                ]:
-                    try:
-                        parsed_date = datetime.strptime(cleaned_with_year, fmt).isoformat()
-                        break
-                    except ValueError:
-                        pass
+                if email_dt:
+                    cleaned_with_year = f"{cleaned} {email_dt.year}"
+                    for fmt in [
+                        "%d %b %H:%M %Y",
+                        "%d %B %H:%M %Y",
+                        "%d/%m %H:%M %Y",
+                        "%d %b %I:%M %p %Y",
+                        "%d %B %I:%M %p %Y",
+                    ]:
+                        try:
+                            parsed_date = datetime.strptime(cleaned_with_year, fmt).isoformat()
+                            break
+                        except ValueError:
+                            pass
 
         print(f"RAW DATE: {raw_date} | PARSED DATE: {parsed_date} | SUBJECT: {subject}")
 
